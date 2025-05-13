@@ -6,9 +6,6 @@ import io.modelcontextprotocol.spec.McpServerTransportProvider;
 import org.apache.dubbo.common.stream.StreamObserver;
 import org.apache.dubbo.remoting.http12.HttpMethods;
 import org.apache.dubbo.remoting.http12.HttpRequest;
-import org.apache.dubbo.remoting.http12.HttpResponse;
-import org.apache.dubbo.remoting.http12.HttpStatus;
-import org.apache.dubbo.remoting.http12.message.MediaType;
 import org.apache.dubbo.rpc.RpcContext;
 import reactor.core.publisher.Mono;
 
@@ -59,9 +56,10 @@ public class DubboMcpSseTransportProvider implements McpServerTransportProvider 
         // Handle the SSE connection
         // This is where you would set up the SSE stream and send events to the client
         DubboMcpSessionTransport dubboMcpSessionTransport = new DubboMcpSessionTransport();
-        String sessionId = UUID.randomUUID().toString();
+        McpServerSession mcpServerSession = sessionFactory.create(dubboMcpSessionTransport);
+        sessions.put(mcpServerSession.getId(), mcpServerSession);
         sendEvent(responseObserver,
-                ENDPOINT_EVENT_TYPE, "http://localhost:50052/org.apache.dubbo.mcp.server.McpService"+"/mcp/message"+"?sessionId="+sessionId);
+                ENDPOINT_EVENT_TYPE, "http://localhost:50052/org.apache.dubbo.mcp.server.McpService"+"/mcp/message"+"?sessionId="+mcpServerSession.getId());
     }
 
     private void sendEvent(StreamObserver<String> responseObserver, String eventType, String data){
@@ -71,7 +69,5 @@ public class DubboMcpSseTransportProvider implements McpServerTransportProvider 
         responseObserver.onNext(body);
     }
 
-    private McpServerSession createSession(McpServerTransport mcpServerTransport){
-        return sessionFactory.create(mcpServerTransport);
-    }
+
 }
