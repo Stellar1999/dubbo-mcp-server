@@ -8,5 +8,6 @@ public interface McpService{
     @Mapping("/mcp/sse")
     void get(StreamObserver<String> responseObserver);
 
-    void post();
+    @Mapping("/mcp/message")
+    void post(StreamObserver<String> responseObserver);
 }
