@@ -105,7 +105,7 @@ public class DubboMcpSseTransportProvider implements McpServerTransportProvider 
         }
     }
 
-    private void handleSseConnection(StreamObserver<String> responseObserver) {
+    private void handleSseConnection(StreamObserver<String> responseObserver){
         // Handle the SSE connection
         // This is where you would set up the SSE stream and send events to the client
         DubboMcpSessionTransport dubboMcpSessionTransport = new DubboMcpSessionTransport(responseObserver, objectMapper);
