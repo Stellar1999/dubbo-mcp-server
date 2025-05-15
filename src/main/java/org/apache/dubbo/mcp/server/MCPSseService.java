@@ -6,7 +6,7 @@ import org.apache.dubbo.common.logger.Logger;
 import org.apache.dubbo.common.logger.LoggerFactory;
 import org.apache.dubbo.common.stream.StreamObserver;
 import org.apache.dubbo.config.annotation.DubboService;
-import org.apache.dubbo.mcp.server.mcp.DubboMcpSseTransportProvider;
+import org.apache.dubbo.mcp.server.transport.DubboMcpSseTransportProvider;
 
 @DubboService
 public class MCPSseService implements McpService {
