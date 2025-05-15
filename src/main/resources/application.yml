@@ -10,3 +10,4 @@ dubbo:
     port: 50053
     triple:
       verbose: true
+

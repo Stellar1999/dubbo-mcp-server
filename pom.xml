@@ -28,6 +28,8 @@
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
         <dubbo.version>3.3.4-SNAPSHOT</dubbo.version>
         <spring-boot.version>3.2.3</spring-boot.version>
+        <maven.compiler.source>17</maven.compiler.source>
+        <maven.compiler.target>17</maven.compiler.target>
         <mcp.version>0.9.0</mcp.version>
         <jaxb-runtime.version>2.3.3-b02</jaxb-runtime.version>
     </properties>
