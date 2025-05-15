@@ -6,30 +6,34 @@ import org.apache.dubbo.common.logger.Logger;
 import org.apache.dubbo.common.logger.LoggerFactory;
 import org.apache.dubbo.common.stream.StreamObserver;
 import org.apache.dubbo.config.annotation.DubboService;
+import org.apache.dubbo.mcp.server.registry.McpApplicationDeployListener;
 import org.apache.dubbo.mcp.server.transport.DubboMcpSseTransportProvider;
+import org.apache.dubbo.remoting.http12.message.ServerSentEvent;
 
 @DubboService
 public class MCPSseService implements McpService {
 
-    private static final Logger logger = LoggerFactory.getLogger(MCPSseService.class);
-
-    private McpAsyncServer mcpAsyncServer;
-
     private static ObjectMapper JSON = new ObjectMapper();
 
-    private final DubboMcpSseTransportProvider transportProvider = getTransportProvider();
+    private DubboMcpSseTransportProvider transportProvider = getTransportProvider();
 
     @Override
-    public void get(StreamObserver<String> responseObserver) {
+    public void get(StreamObserver<ServerSentEvent<String>> responseObserver) {
+        if (transportProvider == null) {
+            transportProvider = getTransportProvider();
+        }
         transportProvider.handleRequest(responseObserver);
     }
 
     @Override
-    public void post(StreamObserver<String> responseObserver) {
+    public void post(StreamObserver<ServerSentEvent<String>> responseObserver) {
+        if (transportProvider == null) {
+            transportProvider = getTransportProvider();
+        }
         transportProvider.handleRequest(responseObserver);
     }
 
     private DubboMcpSseTransportProvider getTransportProvider() {
-        return new DubboMcpSseTransportProvider(JSON);
+        return McpApplicationDeployListener.getDubboMcpSseTransportProvider();
     }
 }

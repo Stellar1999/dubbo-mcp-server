@@ -15,6 +15,7 @@ import java.util.logging.Logger;
 public class McpApplicationDeployListener implements ApplicationDeployListener {
     private static final Logger logger = Logger.getLogger(McpApplicationDeployListener.class.getName());
     private DubboServiceToolRegistry toolRegistry;
+    private static DubboMcpSseTransportProvider dubboMcpSseTransportProvider;
 
     @Override
     public void onInitialize(ApplicationModel scopeModel) {
@@ -26,15 +27,19 @@ public class McpApplicationDeployListener implements ApplicationDeployListener {
         // 这里不做任何事，因为服务还未暴露
     }
 
+    public static DubboMcpSseTransportProvider getDubboMcpSseTransportProvider() {
+        return dubboMcpSseTransportProvider;
+    }
+
     @Override
     public void onStarted(ApplicationModel applicationModel) {
         // 应用完全启动后执行，此时所有服务已暴露完成
         try {
             // 1. 创建McpServer
-            DubboMcpSseTransportProvider transportProvider = new DubboMcpSseTransportProvider(new ObjectMapper());
+            dubboMcpSseTransportProvider = new DubboMcpSseTransportProvider(new ObjectMapper());
             McpSchema.ServerCapabilities.ToolCapabilities toolCapabilities = new McpSchema.ServerCapabilities.ToolCapabilities(true);
             McpSchema.ServerCapabilities serverCapabilities = new McpSchema.ServerCapabilities(null, null, null, null, toolCapabilities);
-            McpAsyncServer mcpAsyncServer = McpServer.async(transportProvider)
+            McpAsyncServer mcpAsyncServer = McpServer.async(dubboMcpSseTransportProvider)
                     .capabilities(serverCapabilities)
                     .build();
 
