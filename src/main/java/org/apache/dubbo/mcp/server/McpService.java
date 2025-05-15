@@ -12,5 +12,5 @@ public interface McpService{
     void get(StreamObserver<ServerSentEvent<String>> responseObserver);
 
     @Mapping("/mcp/message")
-    void post(StreamObserver<ServerSentEvent<String>> responseObserver);
+    void post();
 }

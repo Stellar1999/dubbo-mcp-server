@@ -26,11 +26,11 @@ public class MCPSseService implements McpService {
     }
 
     @Override
-    public void post(StreamObserver<ServerSentEvent<String>> responseObserver) {
+    public void post() {
         if (transportProvider == null) {
             transportProvider = getTransportProvider();
         }
-        transportProvider.handleRequest(responseObserver);
+        transportProvider.handleRequest(null);
     }
 
     private DubboMcpSseTransportProvider getTransportProvider() {

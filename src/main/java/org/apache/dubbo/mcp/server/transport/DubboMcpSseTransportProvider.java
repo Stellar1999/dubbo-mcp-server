@@ -75,31 +75,31 @@ public class DubboMcpSseTransportProvider implements McpServerTransportProvider 
             handleSseConnection(responseObserver);
         }
         if (HttpMethods.isPost(request.method())) {
-            handleMessage( responseObserver);
+            handleMessage();
         }
         return;
     }
 
-    public void handleMessage(StreamObserver<ServerSentEvent<String>> responseObserver) {
+    public void handleMessage() {
         HttpRequest request = RpcContext.getServiceContext().getRequest(HttpRequest.class);
         String sessionId = request.parameter("sessionId");
+        HttpResponse response = RpcContext.getServiceContext().getResponse(HttpResponse.class);
         if (StringUtil.isNullOrEmpty(sessionId)) {
-            responseObserver.onError(new McpError("Session ID missing in message endpoint"));
+            response.setBody(new McpError("Session ID missing in message endpoint"));
             return;
         }
 
         McpServerSession session = sessions.get(sessionId);
         if (session == null) {
-            responseObserver.onError(new McpError("Unknown sessionId: " + sessionId));
+            response.setBody(new McpError("Unknown sessionId: " + sessionId));
             return;
         }
         try {
             McpSchema.JSONRPCMessage message = McpSchema.deserializeJsonRpcMessage(objectMapper, IOUtils.read(request.inputStream(), String.valueOf(StandardCharsets.UTF_8)));
             session.handle(message).block();
-            HttpResponse response = RpcContext.getServiceContext().getResponse(HttpResponse.class);
             response.setStatus(HttpStatus.OK.getCode());
         } catch (IOException e) {
-            responseObserver.onError(new McpError("Invalid message format"));
+            response.setBody(new McpError("Invalid message format"));
             return;
         }
     }
