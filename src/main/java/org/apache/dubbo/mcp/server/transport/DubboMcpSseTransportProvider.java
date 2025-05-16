@@ -111,7 +111,7 @@ public class DubboMcpSseTransportProvider implements McpServerTransportProvider 
         McpServerSession mcpServerSession = sessionFactory.create(dubboMcpSessionTransport);
         sessions.put(mcpServerSession.getId(), mcpServerSession);
         sendEvent(responseObserver,
-                ENDPOINT_EVENT_TYPE, "http://127.0.0.1:50053" + "/mcp/message" + "?sessionId=" + mcpServerSession.getId());
+                ENDPOINT_EVENT_TYPE,  "/mcp/message" + "?sessionId=" + mcpServerSession.getId());
     }
 
     private void sendEvent(StreamObserver<ServerSentEvent<String>> responseObserver, String eventType, String data) {
