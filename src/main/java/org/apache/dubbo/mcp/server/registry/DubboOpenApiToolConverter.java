@@ -3,162 +3,259 @@ package org.apache.dubbo.mcp.server.registry;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.modelcontextprotocol.spec.McpSchema;
 import org.apache.dubbo.common.URL;
+import org.apache.dubbo.common.logger.Logger;
+import org.apache.dubbo.common.logger.LoggerFactory;
 import org.apache.dubbo.remoting.http12.HttpMethods;
 import org.apache.dubbo.remoting.http12.rest.OpenAPIRequest;
+import org.apache.dubbo.remoting.http12.rest.ParamType;
 import org.apache.dubbo.rpc.model.ServiceDescriptor;
+import org.apache.dubbo.rpc.protocol.tri.rest.mapping.meta.ParameterMeta;
 import org.apache.dubbo.rpc.protocol.tri.rest.openapi.DefaultOpenAPIService;
 import org.apache.dubbo.rpc.protocol.tri.rest.openapi.model.*;
+import org.apache.dubbo.rpc.protocol.tri.rest.mapping.meta.MethodMeta;
+import org.apache.dubbo.common.utils.PojoUtils;
 
 import java.util.HashMap;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 
 public class DubboOpenApiToolConverter {
 
-    private final DefaultOpenAPIService openAPIService;
-
+    private static final Logger logger = LoggerFactory.getLogger(DubboOpenApiToolConverter.class);
+    private final DefaultOpenAPIService openApiService;
     private final ObjectMapper objectMapper = new ObjectMapper();
+    private final Map<String, Operation> opCache = new ConcurrentHashMap<>();
 
-    public DubboOpenApiToolConverter(DefaultOpenAPIService openAPIService) {
-        this.openAPIService = openAPIService;
+    public DubboOpenApiToolConverter(DefaultOpenAPIService openApiService) {
+        this.openApiService = openApiService;
     }
 
-    public Map<String, McpSchema.Tool> convertToTools(ServiceDescriptor serviceDescriptor, URL serviceURL) {
-        // 创建OpenAPI请求
-        OpenAPIRequest request = new OpenAPIRequest();
-        String interfaceName = serviceDescriptor.getInterfaceName();
-        request.setService(new String[]{interfaceName});
-        OpenAPI openAPI = openAPIService.getOpenAPI(request);
-        System.out.println(openAPI);
+    public Map<String, McpSchema.Tool> convertToTools(ServiceDescriptor svcDesc, URL svcUrl) {
+        opCache.clear(); // Clear cache for each new service conversion context
+
+        OpenAPIRequest req = new OpenAPIRequest();
+        String intfName = svcDesc.getInterfaceName();
+        req.setService(new String[]{intfName});
+
+        OpenAPI openApiDef = openApiService.getOpenAPI(req);
+        System.out.println(openApiDef);
+
+        if (logger.isDebugEnabled()) {
+            try {
+                logger.debug("OpenAPI for {}: {}", intfName, objectMapper.writeValueAsString(openApiDef));
+            } catch (Exception e) {
+                logger.debug("Failed to serialize OpenAPI for {}", intfName, e);
+            }
+        }
          
-        if (openAPI == null || openAPI.getPaths() == null) {
+        if (openApiDef == null || openApiDef.getPaths() == null) {
+            logger.warn("OpenAPI definition or paths are null for service: {}. No tools will be converted.", intfName);
             return new HashMap<>();
         }
 
-        // 转换服务中的每个操作为MCP工具
-        Map<String, McpSchema.Tool> tools = new HashMap<>();
-
-        for (Map.Entry<String, PathItem> pathEntry : openAPI.getPaths().entrySet()) {
+        Map<String, McpSchema.Tool> mcpTools = new HashMap<>();
+        for (Map.Entry<String, PathItem> pathEntry : openApiDef.getPaths().entrySet()) {
             String path = pathEntry.getKey();
-            PathItem pathItem = pathEntry.getValue();
-            if (pathItem.getOperations() != null) {
-                for (Map.Entry<HttpMethods, Operation> opEntry : pathItem.getOperations().entrySet()) {
-                    HttpMethods method = opEntry.getKey();
-                    Operation operation = opEntry.getValue();
-                    String toolId = operation.getOperationId();
-                    McpSchema.Tool tool = convertOperationToTool(path, method, operation, serviceURL);
-                    if (tool != null) {
-                        tools.put(toolId, tool);
+            PathItem item = pathEntry.getValue();
+            if (item.getOperations() != null) {
+                for (Map.Entry<HttpMethods, Operation> opEntry : item.getOperations().entrySet()) {
+                    HttpMethods httpMethod = opEntry.getKey();
+                    Operation op = opEntry.getValue();
+                    if (op == null || op.getOperationId() == null) {
+                        logger.warn("Skipping operation without ID for path {} and HTTP method {}", path, httpMethod);
+                        continue;
                     }
+                    String opId = op.getOperationId();
+                    McpSchema.Tool mcpTool = convertOperationToMcpTool(path, httpMethod, op);
+                    mcpTools.put(opId, mcpTool);
+                    opCache.put(opId, op); // Cache the original Operation object
+                    logger.info("Converted operation '{}' to MCP tool with name '{}' for service '{}'", opId, mcpTool.name(), intfName);
                 }
             }
         }
-        return tools;
+        return mcpTools;
     }
 
-    /**
-     * 将单个API操作转换为MCP工具
-     */
-    private McpSchema.Tool convertOperationToTool(String path, HttpMethods method,
-                                                  Operation operation, URL serviceURL) {
-        if (operation == null || operation.getOperationId() == null) {
-            return null;
+    public Operation getOperationByToolName(String toolName) {
+        return opCache.get(toolName);
+    }
+
+    private McpSchema.Tool convertOperationToMcpTool(String path, HttpMethods method, Operation op) {
+        String opId = op.getOperationId();
+        String desc = op.getSummary();
+        if (desc == null || desc.isEmpty()) {
+            desc = op.getDescription();
+        }
+        if (desc == null || desc.isEmpty()) {
+            desc = "Executes operation '" + opId + "' which corresponds to a " + method.name() + " request on path " + path + ".";
+            logger.debug("Operation '{}': No summary or description found. Generated default tool description: {}", opId, desc);
         }
 
-        // 工具ID
-        String toolId = operation.getOperationId();
-
-        // 提取描述信息
-        String description = operation.getSummary();
-        if (description == null) {
-            description = operation.getDescription();
-        }
-        if (description == null) {
-            description = "执行 " + method + " " + path;
-        }
-
-        // 提取参数模式（请求体或参数）
-        Map<String, Object> parameterSchema = extractParameterSchema(operation);
-
-        // 将参数模式转换为JSON字符串
+        Map<String, Object> paramsSchemaMap = extractParameterSchema(op);
         String schemaJson;
         try {
-            schemaJson = objectMapper.writeValueAsString(parameterSchema);
+            schemaJson = objectMapper.writeValueAsString(paramsSchemaMap);
         } catch (Exception e) {
-            schemaJson = "{\"type\":\"object\",\"properties\":{}}";
+            logger.error("Failed to serialize parameter schema for tool {}: {}", opId, e.getMessage(), e);
+            schemaJson = "{\"type\":\"object\",\"properties\":{}}"; 
         }
-
-        return new McpSchema.Tool(toolId, description, schemaJson);
+        return new McpSchema.Tool(opId, desc, schemaJson);
     }
 
-    private Map<String, Object> extractParameterSchema(Operation operation) {
+    private Map<String, Object> extractParameterSchema(Operation op) {
         Map<String, Object> schema = new HashMap<>();
-        Map<String, Object> properties = new HashMap<>();
+        Map<String, Object> props = new HashMap<>();
+        schema.put("type", "object");
 
-        if (operation.getParameters() != null) {
-            operation.getParameters().forEach(parameter -> {
-                String name = parameter.getName();
-                Schema paramSchema = parameter.getSchema();
-                if (paramSchema != null) {
-                    properties.put(name, convertSchemaToMap(paramSchema));
+        // Handle path, query, header parameters first
+        if (op.getParameters() != null) {
+            for (Parameter apiParam : op.getParameters()) {
+                if (apiParam.getName() != null && apiParam.getSchema() != null) {
+                    // Pass the parameter name for potentially better default descriptions
+                    props.put(apiParam.getName(), convertOpenApiSchemaToMcpMap(apiParam.getSchema(), apiParam.getName()));
+                     logger.debug("Operation '{}': Added parameter '{}' from op.getParameters() to MCP tool schema.", op.getOperationId(), apiParam.getName());
+                }
+            }
+        }
+
+        // Handle Request Body
+        if (op.getRequestBody() != null && op.getRequestBody().getContents() != null) {
+            op.getRequestBody().getContents().values().stream().findFirst().ifPresent(mediaType -> {
+                if (mediaType.getSchema() != null) {
+                    Schema bodySchema = mediaType.getSchema();
+                    MethodMeta methodMeta = op.getMeta();
+                    String inferredBodyParamName = "requestBodyPayload";
+
+                    if (methodMeta != null && methodMeta.getParameters() != null) {
+                        ParameterMeta[] methodParams = methodMeta.getParameters();
+                        ParameterMeta requestBodyJavaParam = null;
+
+                        if (methodParams.length == 1) {
+                            ParameterMeta singleParam = methodParams[0];
+                            if (singleParam.getNamedValueMeta().paramType() == null ||
+                                singleParam.getNamedValueMeta().paramType() == ParamType.Body) {
+                                requestBodyJavaParam = singleParam;
+                            }
+                        } else {
+                            for (ParameterMeta pMeta : methodParams) {
+                                if (pMeta.getNamedValueMeta().paramType() == ParamType.Body) {
+                                    requestBodyJavaParam = pMeta;
+                                    break;
+                                }
+                            }
+                            if (requestBodyJavaParam == null) {
+                                for (ParameterMeta pMeta : methodParams) {
+                                    if (pMeta.getNamedValueMeta().paramType() == null && PojoUtils.isPojo(pMeta.getType())) {
+                                        requestBodyJavaParam = pMeta;
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+
+                        if (requestBodyJavaParam != null) {
+                            String actualParamName = requestBodyJavaParam.getName();
+                            if (actualParamName != null && !actualParamName.startsWith("arg") && !actualParamName.isEmpty()) {
+                                inferredBodyParamName = actualParamName;
+                                logger.info("Operation '{}': Inferred request body parameter name as '{}' from MethodMeta for schema type '{}'.", op.getOperationId(), inferredBodyParamName, bodySchema.getType());
+                            } else {
+                                logger.warn("Operation '{}': Could not get a meaningful name for request body param from MethodMeta (name was '{}'). Using default '{}'. Ensure '-parameters' compiler flag.", op.getOperationId(), actualParamName, inferredBodyParamName);
+                            }
+                        } else {
+                            logger.warn("Operation '{}': Could not identify a specific method parameter for the request body via MethodMeta. Using default name '{}' for schema type '{}'.", op.getOperationId(), inferredBodyParamName, bodySchema.getType());
+                        }
+                    } else {
+                        logger.warn("Operation '{}': MethodMeta not available for request body parameter name inference. Using default name '{}' for schema type '{}'.", op.getOperationId(), inferredBodyParamName, bodySchema.getType());
+                    }
+                    props.put(inferredBodyParamName, convertOpenApiSchemaToMcpMap(bodySchema, inferredBodyParamName));
+                    logger.debug("Operation '{}': Added request body schema (type '{}') under MCP parameter name '{}'.", op.getOperationId(), bodySchema.getType(), inferredBodyParamName);
+
+                } else {
+                    logger.warn("Operation '{}': Request body media type has no schema defined.", op.getOperationId());
                 }
             });
         }
-
-        // 处理请求体
-        if (operation.getRequestBody() != null && operation.getRequestBody().getContents() != null) {
-            for (Map.Entry<String, MediaType> entry : operation.getRequestBody().getContents().entrySet()) {
-                MediaType mediaType = entry.getValue();
-                if (mediaType.getSchema() != null) {
-                    Map<String, Object> bodySchema = convertSchemaToMap(mediaType.getSchema());
-                    // 如果是复杂对象，合并其属性
-                    if (bodySchema.containsKey("properties")) {
-                        @SuppressWarnings("unchecked")
-                        Map<String, Object> bodyProps = (Map<String, Object>) bodySchema.get("properties");
-                        properties.putAll(bodyProps);
-                    } else {
-                        properties.put("body", bodySchema);
-                    }
-                    break; // 只处理第一个媒体类型
-                }
-            }
-        }
-
-        schema.put("type", "object");
-        schema.put("properties", properties);
-
+        schema.put("properties", props);
         return schema;
     }
 
-    private Map<String, Object> convertSchemaToMap(Schema schema) {
-        Map<String, Object> result = new HashMap<>();
-
-        // 基本类型属性
-        if (schema.getType() != null) {
-            result.put("type", schema.getType().toString().toLowerCase());
-        }
-
-        if (schema.getFormat() != null) {
-            result.put("format", schema.getFormat());
-        }
-
-        if (schema.getDescription() != null) {
-            result.put("description", schema.getDescription());
-        }
-
-        if (Schema.Type.OBJECT.equals(schema.getType()) && schema.getProperties() != null) {
-            Map<String, Object> properties = new HashMap<>();
-            schema.getProperties().forEach((name, propSchema) ->
-                    properties.put(name, convertSchemaToMap(propSchema))
-            );
-            result.put("properties", properties);
-        }
-
-        // 数组类型特有属性
-        if (Schema.Type.ARRAY.equals(schema.getType()) && schema.getItems() != null) {
-            result.put("items", convertSchemaToMap(schema.getItems()));
-        }
-
-        return result;
+    // Overloaded method for cases where property name is not known or not applicable (e.g. array items)
+    private Map<String, Object> convertOpenApiSchemaToMcpMap(Schema openApiSchema) {
+        return convertOpenApiSchemaToMcpMap(openApiSchema, null);
     }
 
+    private Map<String, Object> convertOpenApiSchemaToMcpMap(Schema openApiSchema, String propertyName) {
+        Map<String, Object> mcpMap = new HashMap<>();
+        if (openApiSchema == null) {
+            return mcpMap;
+        }
+
+        if (openApiSchema.getRef() != null) {
+            mcpMap.put("$ref", openApiSchema.getRef());
+        }
+        if (openApiSchema.getType() != null) {
+            mcpMap.put("type", openApiSchema.getType().toString().toLowerCase());
+        }
+        if (openApiSchema.getFormat() != null) {
+            mcpMap.put("format", openApiSchema.getFormat());
+        }
+
+        if (openApiSchema.getDescription() != null && !openApiSchema.getDescription().isEmpty()) {
+            mcpMap.put("description", openApiSchema.getDescription());
+        } else {
+            String defaultParamDesc = getParamDesc(openApiSchema, propertyName);
+
+            mcpMap.put("description", defaultParamDesc);
+            logger.trace("Schema for '{}': No description. Generated default: {}", (propertyName != null ? propertyName : "unnamed_schema"), defaultParamDesc);
+        }
+
+        if (openApiSchema.getEnumeration() != null && !openApiSchema.getEnumeration().isEmpty()) {
+            mcpMap.put("enum", openApiSchema.getEnumeration());
+        }
+        if (openApiSchema.getDefaultValue() != null) {
+            mcpMap.put("default", openApiSchema.getDefaultValue());
+        }
+
+        if (Schema.Type.OBJECT.equals(openApiSchema.getType()) && openApiSchema.getProperties() != null) {
+            Map<String, Object> nestedProps = new HashMap<>();
+            openApiSchema.getProperties().forEach((name, propSchema) ->
+                    // Pass the nested property name for its default description generation
+                    nestedProps.put(name, convertOpenApiSchemaToMcpMap(propSchema, name))
+            );
+            mcpMap.put("properties", nestedProps);
+        }
+
+        if (Schema.Type.ARRAY.equals(openApiSchema.getType()) && openApiSchema.getItems() != null) {
+            // For array items, the 'propertyName' context is less direct, so passing null or a generic placeholder
+            mcpMap.put("items", convertOpenApiSchemaToMcpMap(openApiSchema.getItems(), propertyName != null ? propertyName + "_item" : null));
+        }
+        return mcpMap;
+    }
+
+    private static String getParamDesc(Schema openApiSchema, String propertyName) {
+        String typeOrRefString = "";
+        if (openApiSchema.getRef() != null && !openApiSchema.getRef().isEmpty()) {
+            String ref = openApiSchema.getRef();
+            String componentName = ref.substring(ref.lastIndexOf('/') + 1);
+            typeOrRefString = " referencing '" + componentName + "'"; // Indicates it's a reference
+            if (openApiSchema.getType() != null) {
+                 typeOrRefString += " (which is of type '" + openApiSchema.getType().toString().toLowerCase() + "')";
+            }
+
+        } else if (openApiSchema.getType() != null) {
+            typeOrRefString = " of type '" + openApiSchema.getType().toString().toLowerCase() + "'";
+            if (openApiSchema.getFormat() != null) {
+                typeOrRefString += " with format '" + openApiSchema.getFormat() + "'";
+            }
+        }
+
+        String namePrefix;
+        if (propertyName != null && !propertyName.isEmpty()) {
+            namePrefix = "Parameter '" + propertyName + "'";
+        } else {
+            namePrefix = typeOrRefString.isEmpty() ? "Parameter" : "Schema";
+        }
+
+        return namePrefix + typeOrRefString + ".";
+    }
 }

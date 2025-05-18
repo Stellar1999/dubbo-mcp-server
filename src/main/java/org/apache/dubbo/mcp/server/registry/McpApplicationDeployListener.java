@@ -5,11 +5,15 @@ import io.modelcontextprotocol.server.McpAsyncServer;
 import io.modelcontextprotocol.server.McpServer;
 import io.modelcontextprotocol.spec.McpSchema;
 import org.apache.dubbo.common.deploy.ApplicationDeployListener;
+import org.apache.dubbo.mcp.server.generic.DubboMcpGenericCaller;
 import org.apache.dubbo.mcp.server.transport.DubboMcpSseTransportProvider;
 import org.apache.dubbo.rpc.model.ApplicationModel;
+import org.apache.dubbo.rpc.model.FrameworkModel;
 import org.apache.dubbo.rpc.model.ProviderModel;
+import org.apache.dubbo.rpc.protocol.tri.rest.openapi.DefaultOpenAPIService;
 
 import java.util.Collection;
+import java.util.logging.Level;
 import java.util.logging.Logger;
 
 public class McpApplicationDeployListener implements ApplicationDeployListener {
@@ -18,14 +22,10 @@ public class McpApplicationDeployListener implements ApplicationDeployListener {
     private static DubboMcpSseTransportProvider dubboMcpSseTransportProvider;
 
     @Override
-    public void onInitialize(ApplicationModel scopeModel) {
-
-    }
+    public void onInitialize(ApplicationModel scopeModel) {}
 
     @Override
-    public void onStarting(ApplicationModel applicationModel) {
-        // 这里不做任何事，因为服务还未暴露
-    }
+    public void onStarting(ApplicationModel applicationModel) {}
 
     public static DubboMcpSseTransportProvider getDubboMcpSseTransportProvider() {
         return dubboMcpSseTransportProvider;
@@ -33,48 +33,49 @@ public class McpApplicationDeployListener implements ApplicationDeployListener {
 
     @Override
     public void onStarted(ApplicationModel applicationModel) {
-        // 应用完全启动后执行，此时所有服务已暴露完成
         try {
-            // 1. 创建McpServer
+            logger.info("McpApplicationDeployListener: Application started. Initializing MCP server and tools...");
+
             dubboMcpSseTransportProvider = new DubboMcpSseTransportProvider(new ObjectMapper());
             McpSchema.ServerCapabilities.ToolCapabilities toolCapabilities = new McpSchema.ServerCapabilities.ToolCapabilities(true);
             McpSchema.ServerCapabilities serverCapabilities = new McpSchema.ServerCapabilities(null, null, null, null, toolCapabilities);
+            
             McpAsyncServer mcpAsyncServer = McpServer.async(dubboMcpSseTransportProvider)
                     .capabilities(serverCapabilities)
                     .build();
 
-            // 2. 创建工具注册器
-            toolRegistry = new DubboServiceToolRegistry(mcpAsyncServer);
+            FrameworkModel frameworkModel = applicationModel.getFrameworkModel();
+            DefaultOpenAPIService defaultOpenAPIService = new DefaultOpenAPIService(frameworkModel);
 
-            // 3. 获取所有已暴露服务并注册
+            DubboOpenApiToolConverter toolConverter = new DubboOpenApiToolConverter(defaultOpenAPIService);
+
+            DubboMcpGenericCaller genericCaller = new DubboMcpGenericCaller(applicationModel);
+
+            toolRegistry = new DubboServiceToolRegistry(mcpAsyncServer, toolConverter, genericCaller);
+
             Collection<ProviderModel> providerModels = applicationModel.getApplicationServiceRepository().allProviderModels();
+            logger.info("Found " + providerModels.size() + " provider models. Starting tool registration...");
             for (ProviderModel pm : providerModels) {
-                System.out.println("ProviderModel: " + pm.getServiceKey() + ", module: " + pm.getModuleModel().getDesc());
+                logger.info("Processing ProviderModel: " + pm.getServiceKey() + ", module: " + pm.getModuleModel().getDesc());
                 toolRegistry.registerService(pm);
             }
-
-            logger.info("MCP服务初始化完成，成功注册");
+            logger.info("MCP service initialization complete. Registered " + toolRegistry.getRegisteredToolCount() + " tools.");
         } catch (Exception e) {
-            logger.severe("MCP服务初始化失败：" + e.getMessage());
+            logger.log(Level.SEVERE, "MCP service initialization failed: " + e.getMessage(), e);
         }
     }
 
     @Override
     public void onStopping(ApplicationModel applicationModel) {
-        // 应用停止前执行，可以在这里清理资源
         if (toolRegistry != null) {
-            // 如果需要，执行清理逻辑
-            logger.info("MCP服务停止中...");
+            logger.info("MCP service stopping. Clearing tool registry...");
+            toolRegistry.clearRegistry();
         }
     }
 
     @Override
-    public void onStopped(ApplicationModel applicationModel) {
-        // 应用已停止
-    }
+    public void onStopped(ApplicationModel applicationModel) {}
 
     @Override
-    public void onFailure(ApplicationModel applicationModel, Throwable cause) {
-        logger.severe("应用启动失败：" + cause.getMessage());
-    }
+    public void onFailure(ApplicationModel applicationModel, Throwable cause) {}
 }

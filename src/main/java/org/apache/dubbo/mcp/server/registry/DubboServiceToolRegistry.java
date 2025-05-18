@@ -7,12 +7,16 @@ import io.modelcontextprotocol.spec.McpSchema;
 import org.apache.dubbo.common.URL;
 import org.apache.dubbo.common.logger.Logger;
 import org.apache.dubbo.common.logger.LoggerFactory;
-import org.apache.dubbo.rpc.model.ApplicationModel;
+import org.apache.dubbo.mcp.server.generic.DubboMcpGenericCaller;
 import org.apache.dubbo.rpc.model.ProviderModel;
 import org.apache.dubbo.rpc.model.ServiceDescriptor;
-import org.apache.dubbo.rpc.protocol.tri.rest.openapi.DefaultOpenAPIService;
+import org.apache.dubbo.rpc.protocol.tri.rest.mapping.meta.MethodMeta;
+import org.apache.dubbo.rpc.protocol.tri.rest.mapping.meta.ParameterMeta;
+import org.apache.dubbo.rpc.protocol.tri.rest.mapping.meta.ServiceMeta;
+import org.apache.dubbo.rpc.protocol.tri.rest.openapi.model.Operation;
 import reactor.core.publisher.Mono;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
@@ -24,11 +28,13 @@ public class DubboServiceToolRegistry {
 
     private final McpAsyncServer mcpServer;
     private final DubboOpenApiToolConverter toolConverter;
+    private final DubboMcpGenericCaller genericCaller;
     private final Map<String, McpServerFeatures.AsyncToolSpecification> registeredTools = new ConcurrentHashMap<>();
 
-    public DubboServiceToolRegistry(McpAsyncServer mcpServer) {
+    public DubboServiceToolRegistry(McpAsyncServer mcpServer,DubboOpenApiToolConverter toolConverter, DubboMcpGenericCaller genericCaller) {
         this.mcpServer = mcpServer;
-        this.toolConverter = new DubboOpenApiToolConverter(ApplicationModel.defaultModel().getBean(DefaultOpenAPIService.class));
+        this.toolConverter = toolConverter;
+        this.genericCaller = genericCaller;
     }
 
     public void registerService(ProviderModel providerModel) {
@@ -43,8 +49,6 @@ public class DubboServiceToolRegistry {
         try {
             // 使用第一个URL作为服务URL
             URL url = statedURLs.get(0);
-            
-            // 转换服务为工具
             Map<String, McpSchema.Tool> tools = toolConverter.convertToTools(serviceDescriptor, url);
 
             if (tools.isEmpty()) {
@@ -54,8 +58,8 @@ public class DubboServiceToolRegistry {
 
             // 注册每个工具
             for (Map.Entry<String, McpSchema.Tool> entry : tools.entrySet()) {
-                String toolId = entry.getValue().name(); // 直接用 tool 的 name 字段
                 McpSchema.Tool tool = entry.getValue();
+                String toolId = tool.name();
             
                 // 注册前判断
                 if (registeredTools.containsKey(toolId)) {
@@ -64,7 +68,12 @@ public class DubboServiceToolRegistry {
                 }
             
                 try {
-                    McpServerFeatures.AsyncToolSpecification toolSpec = createToolSpecification(tool);
+                    Operation operation = toolConverter.getOperationByToolName(toolId);
+                    if (operation == null) {
+                        logger.error("Could not find Operation metadata for tool: {}. Skipping registration.", tool);
+                        continue;
+                    }
+                    McpServerFeatures.AsyncToolSpecification toolSpec = createToolSpecification(tool, operation, url);
                     mcpServer.addTool(toolSpec).block();
                     registeredTools.put(toolId, toolSpec);
                     logger.info("Registered MCP tool: " + toolId);
@@ -78,15 +87,47 @@ public class DubboServiceToolRegistry {
         }
     }
 
-    private McpServerFeatures.AsyncToolSpecification createToolSpecification(McpSchema.Tool tool) {
-        // TODO: 这里需要实现真正的工具调用逻辑，目前只返回一个空结果
-        BiFunction<McpAsyncServerExchange, Map<String, Object>, Mono<McpSchema.CallToolResult>> callFunction =
-                (exchange, args) -> {
-                    // 空实现，直接返回空结果
-                    return Mono.just(new McpSchema.CallToolResult("工具执行功能尚未实现", false));
-                };
+    private McpServerFeatures.AsyncToolSpecification createToolSpecification(McpSchema.Tool mcpApiTool, Operation operation, URL serviceUrlContext) {
+        final MethodMeta methodMeta = operation.getMeta();
+        if (methodMeta == null) {
+            throw new IllegalStateException("MethodMeta not found in Operation for tool: " + mcpApiTool.name());
+        }
+        final ServiceMeta serviceMeta = methodMeta.getServiceMeta();
+        final String interfaceName = serviceMeta.getServiceInterface();
+        final String methodName = methodMeta.getMethod().getName();
+        final Class<?>[] parameterClasses = methodMeta.getMethod().getParameterTypes();
 
-        return new McpServerFeatures.AsyncToolSpecification(tool, callFunction);
+        final List<String> orderedJavaParameterNames = new ArrayList<>();
+        if (methodMeta.getParameters() != null) {
+            for (ParameterMeta javaParamMeta : methodMeta.getParameters()) {
+                orderedJavaParameterNames.add(javaParamMeta.getName());
+            }
+        }
+
+        final String group = serviceMeta.getUrl() != null ? serviceMeta.getUrl().getGroup() : (serviceUrlContext != null ? serviceUrlContext.getGroup() : null);
+        final String version = serviceMeta.getUrl() != null ? serviceMeta.getUrl().getVersion() : (serviceUrlContext != null ? serviceUrlContext.getVersion() : null);
+
+        BiFunction<McpAsyncServerExchange, Map<String, Object>, Mono<McpSchema.CallToolResult>> callFunction =
+                (exchange, mcpProvidedParameters) -> {
+                    try {
+                        Object result = genericCaller.execute(
+                                interfaceName,
+                                methodName,
+                                orderedJavaParameterNames,
+                                parameterClasses,
+                                mcpProvidedParameters,
+                                group,
+                                version
+                        );
+                        String resultJson = (result != null) ? result.toString() : "null"; // TODO: Proper JSON serialization
+                        return Mono.just(new McpSchema.CallToolResult(resultJson, true));
+                    } catch (Exception e) {
+                        logger.error("Error executing tool {} (interface: {}, method: {}): {}",
+                                mcpApiTool.name(), interfaceName, methodName, e.getMessage(), e);
+                        return Mono.just(new McpSchema.CallToolResult("Tool execution failed: " + e.getMessage(), false));
+                    }
+                };
+        return new McpServerFeatures.AsyncToolSpecification(mcpApiTool, callFunction);
     }
 
     public void clearRegistry() {
