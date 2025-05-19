@@ -139,7 +139,7 @@ public class DubboMcpSseTransportProvider implements McpServerTransportProvider 
 
         @Override
         public Mono<Void> closeGracefully() {
-            return Mono.fromRunnable(()->{responseObserver.onCompleted();});
+            return Mono.fromRunnable(responseObserver::onCompleted);
         }
 
         @Override
@@ -150,6 +150,7 @@ public class DubboMcpSseTransportProvider implements McpServerTransportProvider 
                     responseObserver.onNext(ServerSentEvent.<String>builder().event(MESSAGE_EVENT_TYPE).data(jsonText).build());
                 }
                 catch (Exception e) {
+                    responseObserver.onError(new McpError(e));
                 }
             });
         }
