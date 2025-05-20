@@ -23,7 +23,6 @@
     <packaging>pom</packaging>
     <modules>
         <module>dubbo-mcp-server-demo</module>
-        <module>dubbo-mcp-server-sdk</module>
     </modules>
     <version>${revision}</version>
 
