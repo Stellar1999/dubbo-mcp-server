@@ -1,2 +1,3 @@
 # dubbo-mcp-server
-A dubbo Application can support mcp request.And route them to Dubbo method.
+This repository is a demo for dubbo-mcp plugin.
+Can see the PR at dubbo main repository https://github.com/apache/dubbo/pull/15406
